@@ -129,7 +129,7 @@ static const struct uvc_frame_info uvc_frames_mjpeg[] = {
 
 static const struct uvc_format_info uvc_formats[] = {
 	 { V4L2_PIX_FMT_YUYV, uvc_frames_yuyv }, 
-	/* { V4L2_PIX_FMT_MJPEG, uvc_frames_mjpeg }, */
+	{ V4L2_PIX_FMT_MJPEG, uvc_frames_mjpeg },
 };
 
 
@@ -324,21 +324,11 @@ uvc_video_fill_buffer(struct uvc_device *dev, struct v4l2_buffer *buf)
 	case V4L2_PIX_FMT_YUYV:
 		/* Fill the buffer with video data. */
 		bpl = dev->width * 2;
-
-		
 		for (i = 0; i < dev->height; ++i)
 			memset(dev->mem[buf->index] + i*bpl, dev->color++, bpl);
 
-
         buf->bytesused = bpl * dev->height;
 
-		
-
-
-		
-		//memcpy(dev->mem[buf->index], (char *)dev->yuv_buff+buf->index*buf->bytesused, buf->bytesused);
-
-		//buf->bytesused = bpl * dev->height;
 		break;
 
 	case V4L2_PIX_FMT_MJPEG:
@@ -723,6 +713,16 @@ uvc_events_process_data(struct uvc_device *dev, struct uvc_request_data *data)
 
     ctrl = (struct uvc_streaming_control *)&data->data;
     iformat = clamp((unsigned int)ctrl->bFormatIndex, 1U, (unsigned int)ARRAY_SIZE(uvc_formats));
+
+
+
+
+	if(mjpeg_mode == 1)
+		iformat = 2; //mjpeg
+	else
+		iformat = 1; //yuv
+
+	
     format = &uvc_formats[iformat - 1];
 
     nframes = 0;
@@ -933,7 +933,7 @@ int main(int argc, char *argv[])
 
 	mjpeg_mode = 0;
 
-	while ((opt = getopt(argc, argv, "bd:hi:ft")) != -1) {
+	while ((opt = getopt(argc, argv, "bd:hift")) != -1) {
 		switch (opt) {
 		case 'b':
 			bulk_mode = 1;
@@ -971,7 +971,7 @@ int main(int argc, char *argv[])
 		return 1;
 
 
-
+	// load R,G,B jpeg file
 	image_load(dev, mjpeg_image);
 
 	dev->bulk = bulk_mode;
