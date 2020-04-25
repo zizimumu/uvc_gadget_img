@@ -39,8 +39,11 @@
 
 #if 1
 #include <linux/usb/ch9.h>
-#include "/home/emy/friendlyarm/linux/drivers/usb/gadget/function/uvc.h"
-#include "/home/emy/friendlyarm/linux/include/uapi/linux/usb/video.h"
+/* #include "/home/emy/friendlyarm/linux/drivers/usb/gadget/function/uvc.h" */
+/* #include "/home/emy/friendlyarm/linux/include/uapi/linux/usb/video.h" */
+
+#include "uvc.h" 
+#include "video.h"
 #include <linux/videodev2.h>
 /* #include "./drivers/usb/gadget/uvc.h" */
 #endif
