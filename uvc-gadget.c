@@ -33,13 +33,17 @@
 #include <errno.h>
 
 #include <linux/usb/ch9.h>
-#include "/home/emy/friendlyarm/linux/drivers/usb/gadget/function/uvc.h"
-/* #include <linux/usb/g_uvc.h>  */
-#include <linux/usb/video.h>
-#include <linux/videodev2.h>
+/* #include <jpeglib.h>  */
+#include <linux/fb.h>  
+#include <sys/time.h>
 
-#define UVC_INTF_CONTROL	0
-#define UVC_INTF_STREAMING	1
+#if 1
+#include <linux/usb/ch9.h>
+#include "/home/emy/friendlyarm/linux/drivers/usb/gadget/function/uvc.h"
+#include "/home/emy/friendlyarm/linux/include/uapi/linux/usb/video.h"
+#include <linux/videodev2.h>
+/* #include "./drivers/usb/gadget/uvc.h" */
+#endif
 
 #define clamp(val, min, max) ({                 \
         typeof(val) __val = (val);              \
@@ -51,18 +55,6 @@
         __val > __max ? __max: __val; })
 
 #define ARRAY_SIZE(a)	((sizeof(a) / sizeof(a[0])))
-
-#define BUF_CNT 2
-#define IMG_SIZE (640*360*2)
-int g_on = 0;
-
-unsigned char buf1[IMG_SIZE];
-unsigned char buf2[IMG_SIZE];
-unsigned char buf3[IMG_SIZE];
-unsigned char buf4[IMG_SIZE];
-unsigned char *buf_pt[4];
-
-
 
 struct uvc_device
 {
@@ -84,8 +76,63 @@ struct uvc_device
 	unsigned int bulk;
 	uint8_t color;
 	unsigned int imgsize;
+	unsigned int mjpg_sz[4];
+	void *mjpg_buff[4];
 	void *imgdata;
+
+	void *yuv_buff;
+	void *fb_buff_tmp;
+	void *fb_buff;
+	void *jpg_buff;
+	int fb_bpp;
 };
+
+
+static int mjpeg_mode = 0;
+static int fb_mode = 0;
+static int uvc_on = 0;
+
+#define BUF_CNT 4
+#define MAX_PACKET 1024
+
+
+#define UVC_WIDTH 1280
+#define UVC_HEIGHT 720
+
+
+
+struct uvc_frame_info
+{
+	unsigned int width;
+	unsigned int height;
+	unsigned int intervals[8];
+};
+
+struct uvc_format_info
+{
+	unsigned int fcc;
+	const struct uvc_frame_info *frames;
+};
+
+static const struct uvc_frame_info uvc_frames_yuyv[] = {
+	{  640, 360, { 666666, 10000000, 50000000, 0 }, }, 
+	 /*{  640, 480, { 333333, 0, 0, 0 }, }, */
+	{ 1280, 720, { 5000000, 0 }, }, 
+	{ 0, 0, { 0, }, },
+};
+
+static const struct uvc_frame_info uvc_frames_mjpeg[] = {
+	{  640, 360, { 666666, 10000000, 50000000, 0 }, },
+	/* { 1280, 720, { 5000000, 0 }, }, */
+	{ 0, 0, { 0, }, },
+};
+
+static const struct uvc_format_info uvc_formats[] = {
+	 { V4L2_PIX_FMT_YUYV, uvc_frames_yuyv }, 
+	{ V4L2_PIX_FMT_MJPEG, uvc_frames_mjpeg },
+};
+
+
 
 static struct uvc_device *
 uvc_open(const char *devname)
@@ -137,37 +184,164 @@ uvc_close(struct uvc_device *dev)
 /* ---------------------------------------------------------------------------
  * Video streaming
  */
+void dump_mem_s(void *buf,int len)
+{
+	int i;
+	char *val = buf;
+
+	for(i=0;i<len;i++){
+		
+		if(i % 16 == 0)
+			printf("\n");
+
+		printf("  %02x",*val++);
+	}
+	printf("\n");
+}
+
+static char * change2rgb888(int fb_bpp,char *src,char *dest,unsigned int pix)
+{
+	unsigned int i;
+	unsigned short *pt;
+	
+	if(fb_bpp != 24){
+		if(fb_bpp == 16){
+			for(i=0;i<pix;i++){
+				pt = (unsigned short *)&src[2*i];
+				dest[3*i] = (char)(*pt & 0x1f);
+				dest[3*i+1] = (char)( ((*pt)>>5) & 0x3f);
+				dest[3*i+2] = (char)((*pt) >> 11);
+			}
+		}
+		else{
+			printf("dont support bpp %d \n",fb_bpp);
+		}
+
+		return dest;
+	}else
+		return src;
+
+}
+
+
+int tim_subtract(struct timeval *result, struct timeval *x, struct timeval *y)
+
+{
+
+	int nsec;
+
+	if ( x->tv_sec > y->tv_sec )
+		return   -1;
+
+	if ((x->tv_sec==y->tv_sec) && (x->tv_usec>y->tv_usec))
+		return   -1;
+
+	result->tv_sec = ( y->tv_sec-x->tv_sec );
+	result->tv_usec = ( y->tv_usec-x->tv_usec );
+	if (result->tv_usec<0)
+	{
+		result->tv_sec--;
+		result->tv_usec+=1000000;
+	}
+
+	return   0;
+
+}
+
+unsigned int jpg_compress(unsigned char  *src, unsigned char *dest, int width, int height)
+{
+	#define JPEG_QUALITY 80
+
+#if 0
+	int depth = 3;	
+	JSAMPROW row_pointer[1];
+	struct jpeg_compress_struct cinfo;	
+	struct jpeg_error_mgr jerr;  
+	FILE *outfile;	
+	unsigned int size = 0;
+	char *outbuf = NULL;
+	int fd;
+
+	struct   timeval   start,stop,diff;
+  	gettimeofday(&start,0);
+  
+	cinfo.err = jpeg_std_error(&jerr);
+	//* Now we can initialize the JPEG compression object.	
+	jpeg_create_compress(&cinfo);  
+  
+  
+
+	//outbuf = malloc(width*height*3);
+	size = height*height;
+	
+	
+	jpeg_mem_dest(&cinfo, &dest,&size);
+	
+
+	
+
+	cinfo.image_width = width;			   //* image width and height, in pixels  
+	cinfo.image_height = height;  
+	cinfo.input_components = depth;    //* # of color components per pixel	
+	cinfo.in_color_space = JCS_RGB; 	//* colorspace of input image  
+	jpeg_set_defaults(&cinfo);	
+  
+	jpeg_set_quality(&cinfo, JPEG_QUALITY, TRUE ); //* limit to baseline-JPEG values  
+	jpeg_start_compress(&cinfo, TRUE);	
+  
+	int row_stride = width * 3;  
+	while (cinfo.next_scanline < cinfo.image_height)  
+	{  
+		row_pointer[0] = (JSAMPROW)(src + cinfo.next_scanline * row_stride);
+		jpeg_write_scanlines(&cinfo, row_pointer, 1);  
+	}  
+  
+	jpeg_finish_compress(&cinfo);  
+	jpeg_destroy_compress(&cinfo);
+	
+
+
+	gettimeofday(&stop,0);
+	tim_subtract(&diff,&start,&stop);
+	printf("time %d\n",diff.tv_usec);
+
+	return size;  
+#endif 
+
+    return 1;
+}
 
 static void
 uvc_video_fill_buffer(struct uvc_device *dev, struct v4l2_buffer *buf)
 {
 	unsigned int bpl;
 	unsigned int i;
-	unsigned int cnt = 0;
-
+	int fd[3];
+	char *src;
+	char *dest;
+	
 	switch (dev->fcc) {
 	case V4L2_PIX_FMT_YUYV:
 		/* Fill the buffer with video data. */
 		bpl = dev->width * 2;
-		//for (i = 0; i < dev->height; ++i)
-		//	memset(dev->mem[buf->index] + i*bpl, dev->color++, bpl);
+		for (i = 0; i < dev->height; ++i)
+			memset(dev->mem[buf->index] + i*bpl, dev->color++, bpl);
 
-		buf->bytesused = bpl * dev->height;
+        buf->bytesused = bpl * dev->height;
 
-		 memcpy(dev->mem[buf->index], buf_pt[buf->index],IMG_SIZE);
-
-		if((cnt % 100) == 0)
-			printf("filling buff\n");
-
-		cnt++;
-		
 		break;
 
 	case V4L2_PIX_FMT_MJPEG:
-		memcpy(dev->mem[buf->index], dev->imgdata, dev->imgsize);
-		buf->bytesused = dev->imgsize;
+
+
+        memcpy(dev->mem[buf->index], (char *)dev->mjpg_buff[buf->index], dev->mjpg_sz[buf->index]);
+        buf->bytesused = dev->mjpg_sz[buf->index];		
+
+
 		break;
 	}
+	//dump_mem_s(dev->mem[buf->index]);
+
 }
 
 static int
@@ -176,7 +350,7 @@ uvc_video_process(struct uvc_device *dev)
 	struct v4l2_buffer buf;
 	int ret;
 
-	if(g_on == 0)
+	if(uvc_on == 0)
 		return 0;
 
 	memset(&buf, 0, sizeof buf);
@@ -293,10 +467,10 @@ uvc_video_stream(struct uvc_device *dev, int enable)
 		}
 	}
 
-	ioctl(dev->fd, VIDIOC_STREAMON, &type);
+	ret = ioctl(dev->fd, VIDIOC_STREAMON, &type);
 
-
-	
+	if(ret < 0)
+		printf("VIDIOC_STREAMON ioctrl err %d\n",ret);
 	return ret;
 }
 
@@ -315,8 +489,13 @@ uvc_video_set_format(struct uvc_device *dev)
 	fmt.fmt.pix.height = dev->height;
 	fmt.fmt.pix.pixelformat = dev->fcc;
 	fmt.fmt.pix.field = V4L2_FIELD_NONE;
-	if (dev->fcc == V4L2_PIX_FMT_MJPEG)
+	if (dev->fcc == V4L2_PIX_FMT_MJPEG){
 		fmt.fmt.pix.sizeimage = dev->imgsize * 1.5;
+		printf(" === MJPEG mode\n");
+
+	}
+	else
+		printf("=== YUYV mode\n");
 
 	if ((ret = ioctl(dev->fd, VIDIOC_S_FMT, &fmt)) < 0)
 		printf("Unable to set format: %s (%d).\n",
@@ -335,35 +514,6 @@ uvc_video_init(struct uvc_device *dev __attribute__((__unused__)))
  * Request processing
  */
 
-struct uvc_frame_info
-{
-	unsigned int width;
-	unsigned int height;
-	unsigned int intervals[8];
-};
-
-struct uvc_format_info
-{
-	unsigned int fcc;
-	const struct uvc_frame_info *frames;
-};
-
-static const struct uvc_frame_info uvc_frames_yuyv[] = {
-	{  640, 360, { 666666, 10000000, 50000000, 0 }, },
-	{ 1280, 720, { 50000000, 0 }, },
-	{ 0, 0, { 0, }, },
-};
-
-static const struct uvc_frame_info uvc_frames_mjpeg[] = {
-	{  640, 360, { 666666, 10000000, 50000000, 0 }, },
-	{ 1280, 720, { 50000000, 0 }, },
-	{ 0, 0, { 0, }, },
-};
-
-static const struct uvc_format_info uvc_formats[] = {
-	{ V4L2_PIX_FMT_YUYV, uvc_frames_yuyv },
-	/* { V4L2_PIX_FMT_MJPEG, uvc_frames_mjpeg }, */
-};
 
 static void
 uvc_fill_streaming_control(struct uvc_device *dev,
@@ -393,8 +543,14 @@ uvc_fill_streaming_control(struct uvc_device *dev,
 	memset(ctrl, 0, sizeof *ctrl);
 
 	ctrl->bmHint = 1;
-	ctrl->bFormatIndex = iformat + 1;
-	ctrl->bFrameIndex = iframe + 1;
+
+
+    ctrl->bFormatIndex = iformat + 1;
+    ctrl->bFrameIndex = iframe + 1;
+
+	printf("uvc_fill_streaming_control: bFormatIndex %d,bFrameIndex %d \n",ctrl->bFormatIndex,ctrl->bFrameIndex );
+
+	
 	ctrl->dwFrameInterval = frame->intervals[0];
 	switch (format->fcc) {
 	case V4L2_PIX_FMT_YUYV:
@@ -404,7 +560,7 @@ uvc_fill_streaming_control(struct uvc_device *dev,
 		ctrl->dwMaxVideoFrameSize = dev->imgsize;
 		break;
 	}
-	ctrl->dwMaxPayloadTransferSize = 512;	/* TODO this should be filled by the driver. */
+	ctrl->dwMaxPayloadTransferSize = MAX_PACKET;	/* TODO this should be filled by the driver. */
 	ctrl->bmFramingInfo = 3;
 	ctrl->bPreferedVersion = 1;
 	ctrl->bMaxVersion = 1;
@@ -470,7 +626,7 @@ uvc_events_process_streaming(struct uvc_device *dev, uint8_t req, uint8_t cs,
 	case UVC_GET_LEN:
 		resp->data[0] = 0x00;
 		resp->data[1] = 0x22;
-		resp->length = 2;
+		resp->length = 2; //2;
 		break;
 
 	case UVC_GET_INFO:
@@ -525,6 +681,7 @@ uvc_events_process_setup(struct uvc_device *dev, struct usb_ctrlrequest *ctrl,
 	}
 }
 
+
 static void
 uvc_events_process_data(struct uvc_device *dev, struct uvc_request_data *data)
 {
@@ -552,24 +709,45 @@ uvc_events_process_data(struct uvc_device *dev, struct uvc_request_data *data)
 		return;
 	}
 
-	ctrl = (struct uvc_streaming_control *)&data->data;
-	iformat = clamp((unsigned int)ctrl->bFormatIndex, 1U,
-			(unsigned int)ARRAY_SIZE(uvc_formats));
-	format = &uvc_formats[iformat-1];
 
-	nframes = 0;
-	while (format->frames[nframes].width != 0)
-		++nframes;
 
-	iframe = clamp((unsigned int)ctrl->bFrameIndex, 1U, nframes);
-	frame = &format->frames[iframe-1];
-	interval = frame->intervals;
+    ctrl = (struct uvc_streaming_control *)&data->data;
+    iformat = clamp((unsigned int)ctrl->bFormatIndex, 1U, (unsigned int)ARRAY_SIZE(uvc_formats));
 
-	while (interval[0] < ctrl->dwFrameInterval && interval[1])
-		++interval;
 
-	target->bFormatIndex = iformat;
-	target->bFrameIndex = iframe;
+
+
+	if(mjpeg_mode == 1)
+		iformat = 2; //mjpeg
+	else
+		iformat = 1; //yuv
+
+	
+    format = &uvc_formats[iformat - 1];
+
+    nframes = 0;
+    while (format->frames[nframes].width != 0)
+        ++nframes;
+
+    iframe = clamp((unsigned int)ctrl->bFrameIndex, 1U, nframes);
+    frame = &format->frames[iframe - 1];
+    interval = frame->intervals;
+
+    while (interval[0] < ctrl->dwFrameInterval && interval[1])
+        ++interval;
+
+    target->bFormatIndex = iformat;
+    target->bFrameIndex = iframe;
+
+
+
+
+	printf("\nctrl->bFormatIndex = %d ,ctrl->bFrameIndex =%d,iformat %d,iframe %d,*interval %d\n",ctrl->bFormatIndex,ctrl->bFrameIndex,
+		iformat,iframe,*interval);
+
+
+
+	
 	switch (format->fcc) {
 	case V4L2_PIX_FMT_YUYV:
 		target->dwMaxVideoFrameSize = frame->width * frame->height * 2;
@@ -628,16 +806,14 @@ uvc_events_process(struct uvc_device *dev)
 		uvc_video_reqbufs(dev, BUF_CNT);
 		uvc_video_stream(dev, 1);
 
-		g_on = 1;
+		uvc_on = 1;
 		return;
 
 	case UVC_EVENT_STREAMOFF:
 		uvc_video_stream(dev, 0);
 		uvc_video_reqbufs(dev, 0);
 
-		g_on = 0;
-
-		
+		uvc_on = 0;
 		return;
 	}
 
@@ -681,28 +857,47 @@ uvc_events_init(struct uvc_device *dev)
 
 static void image_load(struct uvc_device *dev, const char *img)
 {
-	int fd = -1;
 
-	if (img == NULL)
-		return;
+	int fd[4];
+	int size;
+	int i,max = 0;
+	char *pt;
 
-	fd = open(img, O_RDONLY);
-	if (fd == -1) {
-		printf("Unable to open MJPEG image '%s'\n", img);
-		return;
+
+	if(mjpeg_mode == 1){
+		fd[0] = open("red.jpg", O_RDONLY);
+		fd[1] = open("green.jpg", O_RDONLY);
+		fd[2] = open("blue.jpg", O_RDONLY);
+		fd[3] = open("green.jpg", O_RDONLY);
+
+
+		if (fd[0] <= 0) {
+			printf("Unable to open MJPEG image '%s'\n", img);
+			return;
+		}
+
+		for(i=0;i<4;i++){
+			dev->mjpg_sz[i] = lseek(fd[i], 0, SEEK_END);
+			lseek(fd[i], 0, SEEK_SET);
+
+			dev->mjpg_buff[i] = malloc(dev->mjpg_sz[i] );
+			if (dev->mjpg_buff[i]  == NULL) {
+				printf("Unable to allocate memory for MJPEG image\n");
+				dev->mjpg_sz[i] = 0;
+				return;
+			}
+
+			if(dev->mjpg_sz[i] > max)
+				max = dev->mjpg_sz[i];
+
+			read(fd[i], dev->mjpg_buff[i], dev->mjpg_sz[i] );
+			close(fd[i]);
+		}
+		dev->imgsize = max;
+
 	}
 
-	dev->imgsize = lseek(fd, 0, SEEK_END);
-	lseek(fd, 0, SEEK_SET);
-	dev->imgdata = malloc(dev->imgsize);
-	if (dev->imgdata == NULL) {
-		printf("Unable to allocate memory for MJPEG image\n");
-		dev->imgsize = 0;
-		return;
-	}
-
-	read(fd, dev->imgdata, dev->imgsize);
-	close(fd);
+	
 }
 
 static void usage(const char *argv0)
@@ -722,10 +917,23 @@ int main(int argc, char *argv[])
 	int bulk_mode = 0;
 	char *mjpeg_image = NULL;
 	fd_set fds;
-	int fd;
 	int ret, opt;
+	int fbfd = 0;	
+	struct fb_var_screeninfo vinfo;   
+	struct fb_fix_screeninfo finfo;   
+	long int screensize = 0;  
+	char *fbp;
 
-	while ((opt = getopt(argc, argv, "bd:hi:")) != -1) {
+
+	int fd;
+	int size;
+	char *g_buff;
+	char*dest;
+		
+
+	mjpeg_mode = 0;
+
+	while ((opt = getopt(argc, argv, "bd:hift")) != -1) {
 		switch (opt) {
 		case 'b':
 			bulk_mode = 1;
@@ -740,8 +948,15 @@ int main(int argc, char *argv[])
 			return 0;
 
 		case 'i':
+			mjpeg_mode = 1;
 			mjpeg_image = optarg;
 			break;
+
+		case 't':{
+			printf("test mode\n");
+			
+		}
+		return 0;
 
 		default:
 			fprintf(stderr, "Invalid option '-%c'\n", opt);
@@ -750,10 +965,13 @@ int main(int argc, char *argv[])
 		}
 	}
 
+
 	dev = uvc_open(device);
 	if (dev == NULL)
 		return 1;
 
+
+	// load R,G,B jpeg file
 	image_load(dev, mjpeg_image);
 
 	dev->bulk = bulk_mode;
@@ -763,26 +981,6 @@ int main(int argc, char *argv[])
 
 	FD_ZERO(&fds);
 	FD_SET(dev->fd, &fds);
-
-
-	fd = open("yuv_raw1.bin", O_RDONLY);
-	read(fd,buf1,IMG_SIZE);
-	close(fd);
-
-	fd = open("yuv_raw2.bin", O_RDONLY);
-	read(fd,buf2,IMG_SIZE);
-	close(fd);
-
-	
-	fd = open("yuv_raw3.bin", O_RDONLY);
-	read(fd,buf3,IMG_SIZE);
-	close(fd);
-
-	buf_pt[0] = buf1;
-	buf_pt[1] = buf2;
-	buf_pt[2] = buf3;
-	buf_pt[3] = buf4;
-
 
 	while (1) {
 		fd_set efds = fds;
@@ -796,6 +994,9 @@ int main(int argc, char *argv[])
 	}
 
 	uvc_close(dev);
+
+	if(fb_mode)
+		close(fbfd);
 	return 0;
 }
 
